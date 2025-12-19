@@ -30,7 +30,7 @@
 | `image`        | `IMAGE` | -                                        | 待编辑的原始图片（ComfyUI 标准张量格式）                             |
 | `edit_prompt`  | `STRING`| ""                                       | 图片编辑指令（自然语言，如“将背景改为蓝色，人物衣服变为红色”）       |
 | `api_key`      | `STRING`| sk-你的密钥                              | Gemini API 调用密钥（格式为 sk-xxx）                                   |
-| `api_url`      | `STRING`| https://147ai.com/v1beta/models/{model_name}:generateContent | 接口 URL 模板，`{model_name}` 自动替换为模型名称参数                     |
+| `api_url`      | `STRING`| https://xxx.com/xxxx 接口 URL                   |
 | `aspect_ratio` | `STRING`| 9:16                                     | 图片比例（可选 1:1/4:3/16:9/9:16）                                    |
 | `image_size`   | `STRING`| 2K                                       | 图片分辨率（可选 1080P/2K/4K）                                        |
 | `model_name`   | `STRING`| gemini-2.5-flash-image-preview           | 调用的 Gemini 模型名称（可选填）                                       |
