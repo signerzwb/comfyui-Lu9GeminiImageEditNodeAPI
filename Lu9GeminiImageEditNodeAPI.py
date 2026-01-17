@@ -8,7 +8,7 @@ import io
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry  
 
-# ==================== 原有旧节点（你的当前可用版本，完整保留无修改） ====================
+# ==================== 原有旧节点（优化容错性，保留所有原功能） ====================
 class Lu9GeminiImageEditNodeAPI:
     @classmethod
     def INPUT_TYPES(cls):
@@ -55,9 +55,25 @@ class Lu9GeminiImageEditNodeAPI:
 
     # 辅助函数：清理Base64（移除多余前缀）
     def clean_base64(self, b64_str):
+        if not isinstance(b64_str, str):
+            return ""
         if "data:image/" in b64_str:
             b64_str = b64_str.split(",")[-1]
         return b64_str.strip()
+
+    # 新增辅助函数：查找有效图片部件（解决parts[0]硬编码问题）
+    def find_valid_image_part(self, parts_list):
+        valid_image_fields = ["inlineData", "imageData"]
+        for part in parts_list:
+            if not isinstance(part, dict):
+                continue
+            # 遍历所有有效图片字段，找到第一个非空图片部件
+            for field in valid_image_fields:
+                if field in part and part[field]:
+                    # 校验data字段是否非空
+                    if "data" in part[field] and part[field]["data"]:
+                        return part, field
+        return None, None
 
     def edit_image(self, 
                    images1, edit_prompt, api_key, api_url, aspect_ratio, image_size, model_name,
@@ -111,7 +127,7 @@ class Lu9GeminiImageEditNodeAPI:
                 img_base64 = self.clean_base64(img_base64)
                 img_base64_list.append(img_base64)
 
-            # 3. 构造请求（强制传递aspect_ratio和image_size给API）
+            # 3. 构造请求（优化：增大maxOutputTokens，完善生成配置）
             final_url = api_url.format(model=model_name) if "{model}" in api_url else api_url
             
             # 处理API密钥
@@ -127,27 +143,29 @@ class Lu9GeminiImageEditNodeAPI:
             # 构造parts（Gemini官方驼峰字段）
             parts = [{"text": edit_prompt.strip()}]
             for img_base64 in img_base64_list:
-                parts.append({
-                    "inlineData": {
-                        "mimeType": "image/png",
-                        "data": img_base64
-                    }
-                })
+                if img_base64:  # 过滤空Base64
+                    parts.append({
+                        "inlineData": {
+                            "mimeType": "image/png",
+                            "data": img_base64
+                        }
+                    })
 
             # 构造contents
             contents_item = {"parts": parts}
             if add_role_field:
                 contents_item["role"] = "user"
             
-            # 强制传递aspect_ratio和image_size（关键：让API按此生成）
+            # 优化：增大maxOutputTokens，确保图片Base64完整返回；完善图片配置
             generation_config = {
-                "responseModalities": ["IMAGE", "TEXT"],
+                "responseModalities": ["IMAGE"],  # 仅要求返回图片，减少文本干扰
                 "imageConfig": {
-                    "aspectRatio": aspect_ratio,  # 强制生效9:16
-                    "imageSize": image_size.upper()  # 统一大小写（2k→2K，1080p→1080P）
+                    "aspectRatio": aspect_ratio,
+                    "imageSize": image_size.upper()
                 },
                 "temperature": 0.5,
-                "maxOutputTokens": 2048
+                "maxOutputTokens": 8192,  # 从2048提升到8192，容纳高清图片Base64
+                "stopSequences": []
             }
 
             payload = {
@@ -168,13 +186,14 @@ class Lu9GeminiImageEditNodeAPI:
                 allowed_methods=["POST"]
             )
             session.mount("https://", HTTPAdapter(max_retries=retry_strategy))
+            session.mount("http://", HTTPAdapter(max_retries=retry_strategy))  # 新增http协议重试
             
             response = session.post(
                 final_url,
                 headers=headers,
                 json=payload,
                 timeout=120,
-                verify=False  # 临时关闭SSL验证，生产环境建议开启
+                verify=False  # 临时关闭SSL验证，生产环境建议开启并配置证书
             )
 
             # 打印响应（调试用）
@@ -184,24 +203,32 @@ class Lu9GeminiImageEditNodeAPI:
             response.raise_for_status()
             res_data = response.json()
 
-            # 5. 解析响应（核心修改：不缩放输出图片，保留API生成的9:16尺寸）
+            # 5. 解析响应（核心优化：容错性提升，不再硬编码parts[0]）
             if "candidates" not in res_data or len(res_data["candidates"]) == 0:
                 raise ValueError("响应中无有效candidates")
             
             candidate = res_data["candidates"][0]
-            if "content" not in candidate or "parts" not in candidate["content"]:
-                raise ValueError("响应结构异常")
+            if "content" not in candidate or "parts" not in candidate["content"] or len(candidate["content"]["parts"]) == 0:
+                raise ValueError("响应结构异常，缺少有效parts数据")
             
-            edited_part = candidate["content"]["parts"][0]
-            if "inlineData" not in edited_part:
-                raise ValueError("响应中无图片数据")
+            # 查找有效图片部件（遍历所有parts，而非仅取第一个）
+            parts_list = candidate["content"]["parts"]
+            edited_part, image_field = self.find_valid_image_part(parts_list)
+            if not edited_part or not image_field:
+                raise ValueError("响应中无有效图片数据，未找到非空的inlineData/imageData字段")
             
-            edited_base64 = self.clean_base64(edited_part["inlineData"]["data"])
+            # 提取并清理Base64数据
+            edited_base64 = self.clean_base64(edited_part[image_field]["data"])
+            if not edited_base64:
+                raise ValueError("图片Base64数据为空或无效")
+            
             edited_img_bytes = base64.b64decode(edited_base64)
+            if not edited_img_bytes:
+                raise ValueError("Base64解码后无有效图片字节数据")
+            
             edited_pil = Image.open(io.BytesIO(edited_img_bytes)).convert("RGB")
 
-            # 【关键修改：删除原有的“缩放到输入图尺寸”逻辑】
-            # 直接使用API按aspect_ratio生成的尺寸，不做任何缩放
+            # 保留API生成的原始尺寸，不做任何缩放
             edited_np = np.array(edited_pil).astype(np.float32) / 255.0
             edited_tensor = torch.from_numpy(edited_np).unsqueeze(0)
 
@@ -215,11 +242,11 @@ class Lu9GeminiImageEditNodeAPI:
             # 异常兜底：返回第一张输入图
             return (images1,)
 
-# ==================== 新增节点：带任务状态码返回（基于你的当前版本扩展） ====================
+# ==================== 新增节点：带任务状态码返回（同步优化容错性） ====================
 class Lu9GeminiImageEditNodeAPIWithStatus:
     @classmethod
     def INPUT_TYPES(cls):
-        # 完全复制旧节点的输入参数，保留你当前的所有配置（如api_url默认http://）
+        # 完全复制旧节点的输入参数，保留所有配置
         return {
             "required": {
                 "images1": ("IMAGE",),
@@ -253,7 +280,7 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
     FUNCTION = "edit_image"
     CATEGORY = "Custom Nodes/Gemini Image Edit"
 
-    # 辅助函数：统一输入图片尺寸（与你的旧节点完全一致）
+    # 辅助函数：统一输入图片尺寸（与旧节点完全一致）
     def unify_image_size(self, image_tensor, target_size):
         np_img = (image_tensor.squeeze(0).cpu().numpy() * 255).astype(np.uint8)
         pil_img = Image.fromarray(np_img, mode="RGB")
@@ -262,11 +289,25 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
         tensor_resized = torch.from_numpy(np_resized).unsqueeze(0)
         return tensor_resized
 
-    # 辅助函数：清理Base64（与你的旧节点完全一致）
+    # 辅助函数：清理Base64（与旧节点完全一致，新增类型判断）
     def clean_base64(self, b64_str):
+        if not isinstance(b64_str, str):
+            return ""
         if "data:image/" in b64_str:
             b64_str = b64_str.split(",")[-1]
         return b64_str.strip()
+
+    # 新增辅助函数：查找有效图片部件（同步优化）
+    def find_valid_image_part(self, parts_list):
+        valid_image_fields = ["inlineData", "imageData"]
+        for part in parts_list:
+            if not isinstance(part, dict):
+                continue
+            for field in valid_image_fields:
+                if field in part and part[field]:
+                    if "data" in part[field] and part[field]["data"]:
+                        return part, field
+        return None, None
 
     def edit_image(self, 
                    images1, edit_prompt, api_key, api_url, aspect_ratio, image_size, model_name,
@@ -274,7 +315,7 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
         # 初始化任务状态码：默认0（失败）
         task_status = 0
         try:
-            # 1. 收集并统一输入图片尺寸（与你的旧节点逻辑完全一致）
+            # 1. 收集并统一输入图片尺寸（与旧节点逻辑完全一致）
             image_tensors = []
             for img_port in [images1, images2, images3, images4, images5]:
                 if img_port is not None:
@@ -309,7 +350,7 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
             
             batch_images = torch.cat(unified_image_tensors, dim=0)
 
-            # 2. 批量转Base64（清理多余前缀）
+            # 2. 批量转Base64（清理多余前缀，过滤空值）
             img_base64_list = []
             for idx in range(batch_images.shape[0]):
                 tensor_img = batch_images[idx]
@@ -322,10 +363,10 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
                 img_base64 = self.clean_base64(img_base64)
                 img_base64_list.append(img_base64)
 
-            # 3. 构造请求（强制传递aspect_ratio和image_size给API）
+            # 3. 构造请求（优化：增大maxOutputTokens，完善生成配置）
             final_url = api_url.format(model=model_name) if "{model}" in api_url else api_url
             
-            # 处理API密钥（与你的旧节点逻辑完全一致）
+            # 处理API密钥（与旧节点逻辑完全一致）
             if api_key and not api_key.startswith("Bearer "):
                 api_key = f"Bearer {api_key}"
             
@@ -335,30 +376,32 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
                 "Accept": "application/json"
             }
 
-            # 构造parts（Gemini官方驼峰字段）
+            # 构造parts（Gemini官方驼峰字段，过滤空Base64）
             parts = [{"text": edit_prompt.strip()}]
             for img_base64 in img_base64_list:
-                parts.append({
-                    "inlineData": {
-                        "mimeType": "image/png",
-                        "data": img_base64
-                    }
-                })
+                if img_base64:
+                    parts.append({
+                        "inlineData": {
+                            "mimeType": "image/png",
+                            "data": img_base64
+                        }
+                    })
 
             # 构造contents
             contents_item = {"parts": parts}
             if add_role_field:
                 contents_item["role"] = "user"
             
-            # 强制传递aspect_ratio和image_size（与你的旧节点逻辑完全一致）
+            # 优化：增大maxOutputTokens，确保图片Base64完整返回
             generation_config = {
-                "responseModalities": ["IMAGE", "TEXT"],
+                "responseModalities": ["IMAGE"],
                 "imageConfig": {
                     "aspectRatio": aspect_ratio,
                     "imageSize": image_size.upper()
                 },
                 "temperature": 0.5,
-                "maxOutputTokens": 2048
+                "maxOutputTokens": 8192,
+                "stopSequences": []
             }
 
             payload = {
@@ -366,11 +409,11 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
                 "generationConfig": generation_config
             }
 
-            # 打印请求体（调试用，带新节点标识，方便区分）
+            # 打印请求体（调试用，带新节点标识）
             print("=== 发送的请求体（带任务状态码节点）===")
             print(json.dumps(payload, ensure_ascii=False, indent=2))
 
-            # 4. 发送请求（与你的旧节点逻辑完全一致）
+            # 4. 发送请求（新增http协议重试，提升稳定性）
             session = requests.Session()
             retry_strategy = Retry(
                 total=3,
@@ -379,39 +422,49 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
                 allowed_methods=["POST"]
             )
             session.mount("https://", HTTPAdapter(max_retries=retry_strategy))
+            session.mount("http://", HTTPAdapter(max_retries=retry_strategy))
             
             response = session.post(
                 final_url,
                 headers=headers,
                 json=payload,
                 timeout=120,
-                verify=False  # 保留你的原有配置，临时关闭SSL验证
+                verify=False  # 保留原有配置，临时关闭SSL验证
             )
 
-            # 打印响应（调试用，带新节点标识，方便区分）
+            # 打印响应（调试用，带新节点标识）
             print(f"=== 响应状态码（带任务状态码节点）== {response.status_code} ===")
             print(f"=== 响应内容（带任务状态码节点）== {response.text} ===")
             
             response.raise_for_status()
             res_data = response.json()
 
-            # 5. 解析响应（与你的旧节点逻辑完全一致）
+            # 5. 解析响应（核心优化：容错性提升，遍历parts查找有效图片）
             if "candidates" not in res_data or len(res_data["candidates"]) == 0:
                 raise ValueError("响应中无有效candidates")
             
             candidate = res_data["candidates"][0]
-            if "content" not in candidate or "parts" not in candidate["content"]:
-                raise ValueError("响应结构异常")
+            if "content" not in candidate or "parts" not in candidate["content"] or len(candidate["content"]["parts"]) == 0:
+                raise ValueError("响应结构异常，缺少有效parts数据")
             
-            edited_part = candidate["content"]["parts"][0]
-            if "inlineData" not in edited_part:
-                raise ValueError("响应中无图片数据")
+            # 查找有效图片部件
+            parts_list = candidate["content"]["parts"]
+            edited_part, image_field = self.find_valid_image_part(parts_list)
+            if not edited_part or not image_field:
+                raise ValueError("响应中无有效图片数据，未找到非空的inlineData/imageData字段")
             
-            edited_base64 = self.clean_base64(edited_part["inlineData"]["data"])
+            # 提取并验证Base64数据
+            edited_base64 = self.clean_base64(edited_part[image_field]["data"])
+            if not edited_base64:
+                raise ValueError("图片Base64数据为空或无效")
+            
             edited_img_bytes = base64.b64decode(edited_base64)
+            if not edited_img_bytes:
+                raise ValueError("Base64解码后无有效图片字节数据")
+            
             edited_pil = Image.open(io.BytesIO(edited_img_bytes)).convert("RGB")
 
-            # 保留API生成的原始尺寸，不缩放（与你的旧节点逻辑完全一致）
+            # 保留API生成的原始尺寸，不缩放
             edited_np = np.array(edited_pil).astype(np.float32) / 255.0
             edited_tensor = torch.from_numpy(edited_np).unsqueeze(0)
 
@@ -428,17 +481,17 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
             # 异常兜底：返回第一张输入图 + 失败状态码0
             return (images1, task_status)
 
-# ==================== 节点注册：新旧节点共存（无语法错误，保留你的旧节点映射） ====================
+# ==================== 节点注册：新旧节点共存（无语法错误，直接可用） ====================
 NODE_CLASS_MAPPINGS = {
-    # 旧节点映射（你的原有配置，保留不变）
+    # 旧节点映射（原有配置，保留不变）
     "GeminiImageEdit_1to5Input": Lu9GeminiImageEditNodeAPI,
     # 新节点映射（追加，逗号分隔，无语法错误）
     "GeminiImageEdit_1to5Input_WithStatus": Lu9GeminiImageEditNodeAPIWithStatus
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    # 旧节点显示名称（你的原有配置，保留不变）
+    # 旧节点显示名称（原有配置，保留不变）
     "GeminiImageEdit_1to5Input": " Lu9Gemini 图片编辑节点（1-5图输入）",
-    # 新节点显示名称（追加，逗号分隔，方便识别）
+    # 新节点显示名称（追加，方便识别）
     "GeminiImageEdit_1to5Input_WithStatus": " Lu9Gemini 图片编辑节点（1-5图输入·带任务状态码）"
 }
