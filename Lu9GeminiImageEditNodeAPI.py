@@ -8,7 +8,7 @@ import io
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry  
 
-# ==================== 原有旧节点（优化容错性，保留所有原功能） ====================
+# ==================== 原有旧节点（保持不变，无任何修改） ====================
 class Lu9GeminiImageEditNodeAPI:
     @classmethod
     def INPUT_TYPES(cls):
@@ -242,7 +242,7 @@ class Lu9GeminiImageEditNodeAPI:
             # 异常兜底：返回第一张输入图
             return (images1,)
 
-# ==================== 新增节点：带任务状态码返回（同步优化容错性） ====================
+# ==================== 新增节点：带任务状态码+错误文本输出（同步优化容错性） ====================
 class Lu9GeminiImageEditNodeAPIWithStatus:
     @classmethod
     def INPUT_TYPES(cls):
@@ -274,9 +274,9 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
             }
         }
 
-    # 新增INT类型状态码返回，保留原有图片输出
-    RETURN_TYPES = ("IMAGE", "INT")
-    RETURN_NAMES = ("edited_image", "task_status")
+    # 核心修改：新增STRING类型错误文本输出，保留原有图片+状态码输出
+    RETURN_TYPES = ("IMAGE", "INT", "STRING")
+    RETURN_NAMES = ("edited_image", "task_status", "error_message")
     FUNCTION = "edit_image"
     CATEGORY = "Custom Nodes/Gemini Image Edit"
 
@@ -312,8 +312,9 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
     def edit_image(self, 
                    images1, edit_prompt, api_key, api_url, aspect_ratio, image_size, model_name,
                    images2=None, images3=None, images4=None, images5=None, size_align="images1", add_role_field=True):
-        # 初始化任务状态码：默认0（失败）
+        # 初始化：状态码默认0（失败），错误信息默认空字符串（无错误）
         task_status = 0
+        error_message = ""  # 新增：错误文本初始化
         try:
             # 1. 收集并统一输入图片尺寸（与旧节点逻辑完全一致）
             image_tensors = []
@@ -468,18 +469,20 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
             edited_np = np.array(edited_pil).astype(np.float32) / 255.0
             edited_tensor = torch.from_numpy(edited_np).unsqueeze(0)
 
-            # 流程完全成功，更新状态码为1
+            # 流程完全成功，更新状态码为1，错误信息保持空字符串
             task_status = 1
-            # 返回编辑后的图片 + 成功状态码
-            return (edited_tensor, task_status)
+            # 返回：图片 + 成功状态码 + 空错误信息
+            return (edited_tensor, task_status, error_message)
 
         except Exception as e:
-            error_detail = f"Lu9Gemini图片编辑节点（带状态码）错误：{str(e)}"
+            # 异常处理：更新错误信息，保持状态码为0
+            error_message = f"Lu9Gemini图片编辑节点（带状态码）错误：{str(e)}"  # 新增：赋值错误文本
+            error_detail = error_message  # 保持控制台打印与返回文本一致
             print(error_detail)
             import traceback
             traceback.print_exc()
-            # 异常兜底：返回第一张输入图 + 失败状态码0
-            return (images1, task_status)
+            # 异常兜底：返回第一张输入图 + 失败状态码0 + 详细错误文本
+            return (images1, task_status, error_message)
 
 # ==================== 节点注册：新旧节点共存（无语法错误，直接可用） ====================
 NODE_CLASS_MAPPINGS = {
@@ -493,5 +496,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     # 旧节点显示名称（原有配置，保留不变）
     "GeminiImageEdit_1to5Input": " Lu9Gemini 图片编辑节点（1-5图输入）",
     # 新节点显示名称（追加，方便识别）
-    "GeminiImageEdit_1to5Input_WithStatus": " Lu9Gemini 图片编辑节点（1-5图输入·带任务状态码）"
+    "GeminiImageEdit_1to5Input_WithStatus": " Lu9Gemini 图片编辑节点（1-5图输入·带任务状态码+错误输出）"
 }
