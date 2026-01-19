@@ -327,7 +327,7 @@ class Lu9GeminiImageEditNodeAPI:
                 selected_url,
                 headers=headers,
                 json=payload,
-                timeout=120,
+                timeout=600,
                 verify=False
             )
 
@@ -546,7 +546,7 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
                 final_url,
                 headers=headers,
                 json=payload,
-                timeout=120,
+                timeout=600,
                 verify=False
             )
 
@@ -601,3 +601,4 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "GeminiImageEdit_1to5Input": "Lu9Gemini图片编辑10图版",
     "GeminiImageEdit_1to5Input_WithStatus": " Lu9Gemini 图片编辑节点（1-5图输入·带任务状态码+错误输出）"
 }
+
