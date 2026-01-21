@@ -56,6 +56,11 @@ class Lu9GeminiImageEditNodeAPI:
                     "default": 10.0,  # 关键：默认超时从5秒改为10秒
                     "tooltip": "URL可用性探测超时时间（秒），默认10秒，建议3-20秒"
                 }),
+                # ========== 新增：请求超时时间配置项（最后一个可选参数） ==========
+                "request_timeout": ("FLOAT", {
+                    "default": 180.0,
+                    "tooltip": "API正式请求超时时间（秒），默认180秒，建议60-600秒"
+                }),
             }
         }
 
@@ -198,7 +203,9 @@ class Lu9GeminiImageEditNodeAPI:
     def edit_image(self, 
                    images1, edit_prompt, api_key, api_url_1, api_url_2, aspect_ratio, image_size, model_name,
                    images2=None, images3=None, images4=None, images5=None, images6=None, images7=None, images8=None, images9=None, images10=None,
-                   size_align="images1", add_role_field=True, url_detect_timeout=10.0):
+                   size_align="images1", add_role_field=True, url_detect_timeout=10.0,
+                   # ========== 新增：接收request_timeout参数 ==========
+                   request_timeout=180.0):
         # 初始化：状态码默认0（失败），错误信息默认空，选中URL默认空
         task_status = 0
         error_message = ""
@@ -327,7 +334,8 @@ class Lu9GeminiImageEditNodeAPI:
                 selected_url,
                 headers=headers,
                 json=payload,
-                timeout=600,
+                # ========== 修改：使用配置的request_timeout替代固定600 ==========
+                timeout=request_timeout,
                 verify=False
             )
 
@@ -377,7 +385,7 @@ class Lu9GeminiImageEditNodeAPI:
             # 兜底返回：补充selected_url_info（即使失败也返回当前获取到的URL信息）
             return (images1, task_status, error_message, selected_url_info)
 
-# ==================== 新节点：完全保留，一行不改 ====================
+# ==================== 新节点：完全保留，一行不改（仅添加超时配置） ====================
 class Lu9GeminiImageEditNodeAPIWithStatus:
     @classmethod
     def INPUT_TYPES(cls):
@@ -405,6 +413,11 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
                     "tooltip": "仅用于统一输入多图的尺寸（方便拼接），不影响输出尺寸"
                 }),
                 "add_role_field": ("BOOLEAN", {"default": True, "tooltip": "是否在contents里添加role: user字段"}),
+                # ========== 新增：请求超时时间配置项（最后一个可选参数） ==========
+                "request_timeout": ("FLOAT", {
+                    "default": 180.0,
+                    "tooltip": "API正式请求超时时间（秒），默认180秒，建议60-600秒"
+                }),
             }
         }
 
@@ -441,7 +454,9 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
 
     def edit_image(self, 
                    images1, edit_prompt, api_key, api_url, aspect_ratio, image_size, model_name,
-                   images2=None, images3=None, images4=None, images5=None, size_align="images1", add_role_field=True):
+                   images2=None, images3=None, images4=None, images5=None, size_align="images1", add_role_field=True,
+                   # ========== 新增：接收request_timeout参数 ==========
+                   request_timeout=180.0):
         task_status = 0
         error_message = ""
         try:
@@ -546,7 +561,8 @@ class Lu9GeminiImageEditNodeAPIWithStatus:
                 final_url,
                 headers=headers,
                 json=payload,
-                timeout=600,
+                # ========== 修改：使用配置的request_timeout替代固定600 ==========
+                timeout=request_timeout,
                 verify=False
             )
 
@@ -601,4 +617,3 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "GeminiImageEdit_1to5Input": "Lu9Gemini图片编辑10图版",
     "GeminiImageEdit_1to5Input_WithStatus": " Lu9Gemini 图片编辑节点（1-5图输入·带任务状态码+错误输出）"
 }
-
