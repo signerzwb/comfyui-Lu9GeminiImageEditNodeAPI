@@ -1,138 +1,164 @@
-# ComfyUI 生成重试串联器（最多10个，严格1→10顺序，新增启用开关，彻底解决乱序）
+import re
 import torch
 from nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 
-class ImageGenRetryChain10Strict:
-    DESCRIPTION = "生成节点自动重试（最多10个，严格1→10顺序）：需手动开启动用开关，仅开启的节点参与判断，第一个成功输出图片，全部失败输出空图"
+
+class ImageGenRetryChain10StrictLazyV5_TextOnly:
+    DESCRIPTION = (
+        "严格1→10顺序重试（Lazy短路V5.1，文本判定版）：\n"
+        "- 每路输入：imgN(IMAGE) + statusN(STRING)\n"
+        "- status 按关键词/正则判断成功失败；空字符串可视为成功\n"
+        "- 第一个成功立即输出并短路后续分支（后续采样不会被触发）\n"
+        "- 输出 status_dump：汇总本次实际检查到的 status 文本（不触发未执行分支）"
+    )
     CATEGORY = "自定义节点/生成重试"
-    
-    INPUT_TYPES = lambda: ({
-        "optional": {
-            # 核心新增：10个节点启用开关（布尔型，默认关闭，手动开启才参与判断）
-            "enable1": ("BOOLEAN", {"default": False, "label": "启用节点1"}),
-            "img1": ("IMAGE",),
-            "status1": ("INT", {"default": 0, "min": 0, "max": 1, "step": 1}),
-            
-            "enable2": ("BOOLEAN", {"default": False, "label": "启用节点2"}),
-            "img2": ("IMAGE",),
-            "status2": ("INT", {"default": 0, "min": 0, "max": 1, "step": 1}),
-            
-            "enable3": ("BOOLEAN", {"default": False, "label": "启用节点3"}),
-            "img3": ("IMAGE",),
-            "status3": ("INT", {"default": 0, "min": 0, "max": 1, "step": 1}),
-            
-            "enable4": ("BOOLEAN", {"default": False, "label": "启用节点4"}),
-            "img4": ("IMAGE",),
-            "status4": ("INT", {"default": 0, "min": 0, "max": 1, "step": 1}),
-            
-            "enable5": ("BOOLEAN", {"default": False, "label": "启用节点5"}),
-            "img5": ("IMAGE",),
-            "status5": ("INT", {"default": 0, "min": 0, "max": 1, "step": 1}),
-            
-            "enable6": ("BOOLEAN", {"default": False, "label": "启用节点6"}),
-            "img6": ("IMAGE",),
-            "status6": ("INT", {"default": 0, "min": 0, "max": 1, "step": 1}),
-            
-            "enable7": ("BOOLEAN", {"default": False, "label": "启用节点7"}),
-            "img7": ("IMAGE",),
-            "status7": ("INT", {"default": 0, "min": 0, "max": 1, "step": 1}),
-            
-            "enable8": ("BOOLEAN", {"default": False, "label": "启用节点8"}),
-            "img8": ("IMAGE",),
-            "status8": ("INT", {"default": 0, "min": 0, "max": 1, "step": 1}),
-            
-            "enable9": ("BOOLEAN", {"default": False, "label": "启用节点9"}),
-            "img9": ("IMAGE",),
-            "status9": ("INT", {"default": 0, "min": 0, "max": 1, "step": 1}),
-            
-            "enable10": ("BOOLEAN", {"default": False, "label": "启用节点10"}),
-            "img10": ("IMAGE",),
-            "status10": ("INT", {"default": 0, "min": 0, "max": 1, "step": 1}),
-        }
-    })
-    RETURN_TYPES = ("IMAGE", "INT")
-    RETURN_NAMES = ("final_image", "total_status")
+
+    RETURN_TYPES = ("IMAGE", "INT", "INT", "STRING")
+    RETURN_NAMES = ("final_image", "total_status", "selected_index", "status_dump")
     FUNCTION = "run_chain"
 
-    def run_chain(self, 
-                  # 节点1参数
-                  enable1=False, img1=None, status1=0,
-                  # 节点2参数
-                  enable2=False, img2=None, status2=0,
-                  # 节点3参数
-                  enable3=False, img3=None, status3=0,
-                  # 节点4参数
-                  enable4=False, img4=None, status4=0,
-                  # 节点5参数
-                  enable5=False, img5=None, status5=0,
-                  # 节点6参数
-                  enable6=False, img6=None, status6=0,
-                  # 节点7参数
-                  enable7=False, img7=None, status7=0,
-                  # 节点8参数
-                  enable8=False, img8=None, status8=0,
-                  # 节点9参数
-                  enable9=False, img9=None, status9=0,
-                  # 节点10参数
-                  enable10=False, img10=None, status10=0):
-        # 核心修复：严格按1→10顺序，仅「启用开关为True」的节点才参与判断
-        gen_nodes = []
-        # 节点1：启用则加入
-        if enable1 and img1 is not None:
-            gen_nodes.append(("节点1", img1, status1))
-        # 节点2：启用则加入（仅在节点1未成功时执行）
-        if enable2 and img2 is not None:
-            gen_nodes.append(("节点2", img2, status2))
-        # 节点3：启用则加入
-        if enable3 and img3 is not None:
-            gen_nodes.append(("节点3", img3, status3))
-        # 节点4：启用则加入
-        if enable4 and img4 is not None:
-            gen_nodes.append(("节点4", img4, status4))
-        # 节点5：启用则加入
-        if enable5 and img5 is not None:
-            gen_nodes.append(("节点5", img5, status5))
-        # 节点6：启用则加入
-        if enable6 and img6 is not None:
-            gen_nodes.append(("节点6", img6, status6))
-        # 节点7：启用则加入
-        if enable7 and img7 is not None:
-            gen_nodes.append(("节点7", img7, status7))
-        # 节点8：启用则加入
-        if enable8 and img8 is not None:
-            gen_nodes.append(("节点8", img8, status8))
-        # 节点9：启用则加入
-        if enable9 and img9 is not None:
-            gen_nodes.append(("节点9", img9, status9))
-        # 节点10：启用则加入
-        if enable10 and img10 is not None:
-            gen_nodes.append(("节点10", img10, status10))
+    _TEXT_UNSET = "__UNSET__"
 
-        # 若未启用任何节点，直接返回空图+失败状态
-        if not gen_nodes:
-            empty_img = torch.zeros((1,1,1,3), dtype=torch.float32)
-            return (empty_img, 0)
+    @classmethod
+    def INPUT_TYPES(cls):
+        optional = {
+            "empty_string_as_success": ("BOOLEAN", {
+                "default": True,
+                "label": "空字符串视为成功（成功不输出、失败才输出时建议开启）"
+            }),
+        }
+        for i in range(1, 11):
+            optional[f"enable{i}"] = ("BOOLEAN", {"default": False, "label": f"启用节点{i}"})
+            optional[f"img{i}"] = ("IMAGE", {"lazy": True})
+            # ✅ 让输入框紧凑：multiline=False
+            optional[f"status{i}"] = ("STRING", {"default": cls._TEXT_UNSET, "multiline": False, "lazy": True})
+        return {"optional": optional}
 
-        # 严格按1→10顺序执行：第一个成功则立即输出，终止后续所有节点
-        final_img = None
+    def _empty_image(self):
+        return torch.zeros((1, 1, 1, 3), dtype=torch.float32)
+
+    def _norm_text(self, s: str, max_len=2000) -> str:
+        if s is None:
+            return ""
+        if len(s) > max_len:
+            s = s[:max_len] + " ...[truncated]"
+        return s
+
+    def _parse_status_text(self, raw: str, empty_string_as_success: bool):
+        if raw is None or raw == self._TEXT_UNSET:
+            return (None, "no_status_text")
+
+        s = self._norm_text(str(raw)).strip()
+
+        if s == "":
+            return (1, "empty_string=>success") if empty_string_as_success else (None, "empty_string=>unknown")
+
+        low = s.lower()
+
+        fail_keywords = [
+            "error", "fail", "failed", "exception", "traceback",
+            "cuda out of memory", "out of memory", "oom",
+            "invalid", "nan", "inf", "abort",
+            "失败", "错误", "异常", "报错", "崩溃", "中断", "显存不足",
+            "unauthorized", "401", "403"
+        ]
+        if any(k in low for k in fail_keywords):
+            return (0, f"fail_keyword: {s[:160]}")
+
+        m = re.search(r"(\d+)\s*/\s*(\d+)\s*successful", low)
+        if m:
+            ok = int(m.group(1))
+            total = int(m.group(2))
+            if total <= 0:
+                return (None, f"successful_parse(total<=0): {s[:160]}")
+            if ok <= 0:
+                return (0, f"{ok}/{total} successful => fail")
+            if ok >= total:
+                return (1, f"{ok}/{total} successful => success")
+            return (1, f"{ok}/{total} successful => partial_success")
+
+        success_keywords = [
+            "success", "successful", "succeeded",
+            "ok", "done", "completed", "complete",
+            "finish", "finished",
+            "成功", "完成", "已完成", "结束"
+        ]
+        if any(k in low for k in success_keywords):
+            return (1, f"success_keyword: {s[:160]}")
+
+        return (None, f"unknown_text: {s[:160]}")
+
+    def check_lazy_status(self, **kwargs):
+        needed = []
+        empty_string_as_success = bool(kwargs.get("empty_string_as_success", True))
+
+        for i in range(1, 11):
+            if not kwargs.get(f"enable{i}", False):
+                continue
+
+            status_val = kwargs.get(f"status{i}", self._TEXT_UNSET)
+            if status_val is None:
+                needed.append(f"status{i}")
+                break
+
+            success, _ = self._parse_status_text(status_val, empty_string_as_success)
+
+            if success == 1:
+                if kwargs.get(f"img{i}", None) is None:
+                    needed.append(f"img{i}")
+                break
+
+        return needed
+
+    def run_chain(self, **kwargs):
+        empty_string_as_success = bool(kwargs.get("empty_string_as_success", True))
+
+        any_enabled = False
+        selected_index = 0
         total_status = 0
-        for node_name, img, status in gen_nodes:
-            print(f"【重试串联器】开始执行{node_name}，当前状态：{status}（1成功/0失败）")
-            if status == 1:
-                final_img = img
-                total_status = 1
-                print(f"【重试串联器】{node_name}执行成功，立即输出图片，终止后续节点")
-                break  # 强制终止循环，后续节点不再执行
+        dump_lines = []
+
+        for i in range(1, 11):
+            if not kwargs.get(f"enable{i}", False):
+                continue
+
+            any_enabled = True
+            status_val = kwargs.get(f"status{i}", self._TEXT_UNSET)
+            img_val = kwargs.get(f"img{i}", None)
+
+            success, reason = self._parse_status_text(status_val, empty_string_as_success)
+
+            show_text = ""
+            if status_val is None:
+                show_text = "<None>"
+            elif status_val == self._TEXT_UNSET:
+                show_text = "<UNSET>"
             else:
-                print(f"【重试串联器】{node_name}执行失败，继续下一个节点")
+                show_text = self._norm_text(str(status_val), max_len=600).replace("\n", "\\n")
 
-        # 所有启用的节点均失败，返回空图
-        if final_img is None:
-            print(f"【重试串联器】警告：所有{len(gen_nodes)}个启用节点均失败，输出空图")
-            final_img = torch.zeros((1,1,1,3), dtype=torch.float32)
+            dump_lines.append(f"[节点{i}] success={success} reason={reason} status={show_text}")
 
-        return (final_img, total_status)
+            print(f"【重试串联器-LazyV5.1】节点{i}: success={success}, reason={reason}")
 
-# 注册节点（新名称，方便识别）
-NODE_CLASS_MAPPINGS["ImageGenRetryChain10Strict"] = ImageGenRetryChain10Strict
-NODE_DISPLAY_NAME_MAPPINGS["ImageGenRetryChain10Strict"] = "Lu9生成节点严格顺序重试器（最多10个，带启用开关）"
+            if success == 1 and img_val is not None:
+                selected_index = i
+                total_status = 1
+                print(f"【重试串联器-LazyV5.1】节点{i}成功：输出并短路后续")
+                break
+
+        if not any_enabled:
+            return (self._empty_image(), 0, 0, "未启用任何节点")
+
+        if total_status == 1:
+            final_img = kwargs.get(f"img{selected_index}", None)
+            if final_img is None:
+                final_img = self._empty_image()
+        else:
+            final_img = self._empty_image()
+
+        status_dump = "\n".join(dump_lines) if dump_lines else "无状态信息"
+        return (final_img, total_status, selected_index, status_dump)
+
+
+NODE_CLASS_MAPPINGS["ImageGenRetryChain10StrictLazyV5_TextOnly"] = ImageGenRetryChain10StrictLazyV5_TextOnly
+NODE_DISPLAY_NAME_MAPPINGS["ImageGenRetryChain10StrictLazyV5_TextOnly"] = "Lu9严格顺序重试器（Lazy短路V5.1：文本判定+紧凑输入）"
